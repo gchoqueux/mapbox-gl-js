@@ -15,11 +15,12 @@
 <div id='map'></div>
 
 <script src='/dist/mapbox-gl-dev.js'></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/94/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/101/three.min.js"></script>
+<script src="https://rawgit.com/toji/gl-matrix/master/dist/gl-matrix-min.js"></script>
 <script src='/debug/access_token_generated.js'></script>
 <script>
 
-
+var mat4 = glMatrix.mat4;
 var map = window.map = new mapboxgl.Map({
     container: 'map',
     antialias: true,
@@ -32,6 +33,231 @@ var map = window.map = new mapboxgl.Map({
 });
 
 const THREE = window.THREE;
+let _gl;
+
+let renderTarget;
+let depthRbo;
+let texture;
+
+const vertexCode = `attribute vec4 a_position;
+attribute vec2 a_texcoord;
+
+uniform mat4 u_matrix;
+varying vec2 v_texcoord;
+
+void main() {
+    gl_Position = u_matrix * a_position;
+    v_texcoord = a_texcoord;
+}`;
+
+const fragmentCode = `precision mediump float;
+varying vec2 v_texcoord;
+const vec4 red = vec4(1.0, 0.0, 1.0, 1.0);
+
+uniform sampler2D u_texture;
+
+void main() {
+    gl_FragColor = texture2D(u_texture, v_texcoord);
+    // gl_FragColor = red;
+    // gl_FragColor = vec4(v_texcoord.x, v_texcoord.y, 1.0, 1.0);
+}`;
+
+let shaderProgram;
+let positionLocation;
+let texcoordLocation;
+
+// lookup uniforms
+let matrixLocation;
+let textureLocation;
+
+let positionBuffer;
+let texcoordBuffer;
+
+const matrix = mat4.create();
+
+function prepareProgram(painter) {
+    if (shaderProgram) return;
+    const context = painter.context;
+    const gl = context.gl;
+
+    //Create a vertex shader object
+    const vertShader = gl.createShader(gl.VERTEX_SHADER);
+
+    //Attach vertex shader source code
+    gl.shaderSource(vertShader, vertexCode);
+
+    //Compile the vertex shader
+    gl.compileShader(vertShader);
+
+    // Create fragment shader object
+    const fragShader = gl.createShader(gl.FRAGMENT_SHADER);
+
+    // Attach fragment shader source code
+    gl.shaderSource(fragShader, fragmentCode);
+
+    // Compile the fragment shader
+    gl.compileShader(fragShader);
+
+    // Create a shader program object to store combined shader program
+    shaderProgram = gl.createProgram();
+
+    // Attach a vertex shader
+    gl.attachShader(shaderProgram, vertShader);
+
+    // Attach a fragment shader
+    gl.attachShader(shaderProgram, fragShader);
+
+    // Link both programs
+    gl.linkProgram(shaderProgram);
+
+    // Use the combined shader program object
+    // gl.useProgram(shaderProgram);
+
+    // look up where the vertex data needs to go.
+    positionLocation = gl.getAttribLocation(shaderProgram, "a_position");
+    texcoordLocation = gl.getAttribLocation(shaderProgram, "a_texcoord");
+
+    // lookup uniforms
+    matrixLocation = gl.getUniformLocation(shaderProgram, "u_matrix");
+    textureLocation = gl.getUniformLocation(shaderProgram, "u_texture");
+
+    // Create a buffer.
+    positionBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+
+    // Put a unit quad in the buffer
+    const positions = [
+        0, 0,
+        0, 1,
+        1, 0,
+        1, 0,
+        0, 1,
+        1, 1,
+    ];
+
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+
+    // Create a buffer for texture coords
+    texcoordBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, texcoordBuffer);
+
+    // Put texcoords in the buffer
+    const texcoords = [
+        0, 0,
+        0, 1,
+        1, 0,
+        1, 0,
+        0, 1,
+        1, 1,
+    ];
+
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(texcoords), gl.STATIC_DRAW);
+}
+
+function drawTexture(painter) {
+    if (!texture) {
+        return;
+    }
+    prepareProgram(painter);
+    painter.context.bindFramebuffer.set(null, true);
+
+    const context = painter.context;
+    const gl = context.gl;
+    // gl.bindTexture(gl.TEXTURE_2D, tex);
+    // texture.bind(gl.LINEAR, gl.CLAMP_TO_EDGE);
+    gl.bindTexture(gl.TEXTURE_2D, texture.texture);
+
+
+    // Tell WebGL to use our shader program pair
+    gl.useProgram(shaderProgram);
+
+    // Setup the attributes to pull data from our buffers
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+    gl.enableVertexAttribArray(positionLocation);
+    gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, texcoordBuffer);
+    gl.enableVertexAttribArray(texcoordLocation);
+    gl.vertexAttribPointer(texcoordLocation, 2, gl.FLOAT, false, 0, 0);
+
+    // this matirx will convert from pixels to clip space
+    mat4.ortho(matrix, 0, gl.canvas.width, gl.canvas.height, 0, -1, 1);
+
+    // this matrix will translate our quad to dstX, dstY
+    // mat4.translate(matrix, matrix, [dstX, dstY, 0]);
+
+    // this matrix will scale our 1 unit quad
+    // from 1 unit to texWidth, texHeight units
+    mat4.scale(matrix, matrix, [gl.canvas.width, gl.canvas.height, 1]);
+
+    // Set the matrix.
+    gl.uniformMatrix4fv(matrixLocation, false, matrix);
+
+    // Tell the shader to get the texture from texture unit 0
+    gl.uniform1i(textureLocation, 0);
+
+    // draw the quad (2 triangles, 6 vertices)
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+}
+
+function renderToTexture(painter) {
+    const context = painter.context;
+    const gl = context.gl;
+
+    if (depthRbo) {
+        depthRbo = context.createRenderbuffer(context.gl.DEPTH_COMPONENT16, this.width, this.height);
+    }
+
+    if (!renderTarget) {
+        // Create render target
+        const width = painter.width;
+        const height = painter.height;
+
+        renderTarget = context.createFramebuffer(painter.width, painter.height);
+        // create color buffer
+        // texture = new Texture(context, {width: painter.width, height: painter.height, data: null}, gl.RGBA);
+        // texture.bind(gl.LINEAR, gl.CLAMP_TO_EDGE);
+
+        texture = { texture: context.gl.createTexture() };
+
+        gl.bindTexture(gl.TEXTURE_2D, texture.texture);
+
+        painter.texture = texture.texture;
+
+        context.pixelStoreUnpackFlipY.set(false);
+        context.pixelStoreUnpack.set(1);
+        // context.pixelStoreUnpackPremultiplyAlpha.set(this.format === gl.RGBA && (!options || options.premultiply !== false));
+
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+        renderTarget.colorAttachment.set(texture.texture);
+        renderTarget.depthAttachment.set(depthRbo);
+
+        const stencilbuffer = gl.createRenderbuffer();
+        gl.bindRenderbuffer(gl.RENDERBUFFER, stencilbuffer);
+        gl.renderbufferStorage(gl.RENDERBUFFER, gl.STENCIL_INDEX8, painter.width, painter.height);
+        gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.STENCIL_ATTACHMENT, gl.RENDERBUFFER, stencilbuffer);
+    }
+
+    context.bindFramebuffer.set(renderTarget.framebuffer);
+
+    return texture;
+
+    // if (painter.depthRboNeedsClear) {
+    //     context.clear({ depth: 1 });
+    //     painter.depthRboNeedsClear = false;
+    // }
+
+    // Find good mode
+    // context.setStencilMode(StencilMode.disabled);
+    // context.setDepthMode(new DepthMode(gl.LEQUAL, DepthMode.ReadWrite, [0, 1]));
+    // context.setColorMode(painter.colorModeForRenderPass());
+}
 
 class ThreeJSCube {
     constructor() {
@@ -46,7 +272,7 @@ class ThreeJSCube {
         this.scene = new THREE.Scene();
 
         var geometry = new THREE.BoxGeometry(1, 1, 1);
-        var material = new THREE.MeshPhongMaterial({ color: 0xeeeeff });
+        var material = new THREE.MeshBasicMaterial({ color: 0xffffff});
         this.cube = new THREE.Mesh(geometry, material);
         this.scene.add(this.cube);
 
@@ -56,14 +282,36 @@ class ThreeJSCube {
     }
 
     onAdd(map, gl) {
+        _gl = gl;
         this.map = map;
 
         this.renderer = new THREE.WebGLRenderer({
             canvas: map.getCanvas(),
-            context: gl
+            context: gl,
         });
+        const width = map.painter.width;
+        const height = map.painter.height;
+         
+        const texture = new THREE.Texture();
+        const properties = this.renderer.properties.get(texture);
+        properties.__webglTexture = map.painter.texture;
+        properties.__webglInit = true;
 
+        this.cube.material.map = texture;
         this.renderer.autoClear = false;
+
+        // hook  mapbox
+        const bindFramebuffer = map.painter.context.bindFramebuffer;
+        const set = bindFramebuffer.set.bind(bindFramebuffer);
+
+        bindFramebuffer.set = (v, force = false) => {
+            if (v == null && !force) {
+                set(null);
+                return renderToTexture(map.painter);
+            } else {
+                set(v);
+            }
+        }
     }
 
     render(gl, matrix) {
@@ -76,11 +324,12 @@ class ThreeJSCube {
         this.camera.projectionMatrix.elements = matrix;
         this.camera.projectionMatrix = m.multiply(l);
         this.renderer.state.reset();
+        
         this.renderer.render(this.scene, this.camera);
         this.map.triggerRepaint();
     }
 }
-
+let threeCube;
 map.on('load', function() {
     map.addLayer({
         'id': '3d-buildings',
@@ -94,9 +343,14 @@ map.on('load', function() {
             'fill-extrusion-height': ["get", "height"]
         }
     });
+    threeCube = new ThreeJSCube()
+    map.addLayer(threeCube);
 
-    map.addLayer(new ThreeJSCube());
+    map.on('render', function () {
+        drawTexture(map.painter);
+    });
 });
+
 </script>
 </body>
 </html>
