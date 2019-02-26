@@ -360,7 +360,7 @@ class Map extends Camera {
         ], this);
 
         this._setupContainer();
-        this._setupPainter();
+        this._setupPainter(options.context);
         if (this.painter === undefined) {
             throw new Error(`Failed to initialize WebGL.`);
         }
@@ -1550,19 +1550,20 @@ class Map extends Camera {
         this._canvas.style.height = `${height}px`;
     }
 
-    _setupPainter() {
+    _setupPainter(gl) {
         const attributes = extend({}, isSupported.webGLContextAttributes, {
             failIfMajorPerformanceCaveat: this._failIfMajorPerformanceCaveat,
             preserveDrawingBuffer: this._preserveDrawingBuffer,
             antialias: this._antialias || false
         });
 
-        const gl = this._canvas.getContext('webgl', attributes) ||
-            this._canvas.getContext('experimental-webgl', attributes);
-
-        if (!gl) {
-            this.fire(new ErrorEvent(new Error('Failed to initialize WebGL')));
-            return;
+        if(!gl) {
+            gl = this._canvas.getContext('webgl', attributes) ||
+                this._canvas.getContext('experimental-webgl', attributes);
+            if (!gl) {
+                this.fire(new ErrorEvent(new Error('Failed to initialize WebGL')));
+                return;
+            }
         }
 
         this.painter = new Painter(gl, this.transform);

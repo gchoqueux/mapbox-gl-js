@@ -7,11 +7,25 @@
     <link rel='stylesheet' href='/dist/mapbox-gl.css' />
     <style>
         body { margin: 0; padding: 0; }
-        html, body, #map { height: 100%; }
+        html, body, #map { 
+            height: 100%; 
+            z-index: 1;
+        }
+        
+        #three {
+            position: absolute;
+            pointer-events: none;
+            top: 0px;
+            left: 0px;
+            height: 512px; 
+            width: 512px;
+            z-index: 2;
+        }
     </style>
 </head>
 
 <body>
+<div id='three'></div>
 <div id='map'></div>
 
 <script src='/dist/mapbox-gl-dev.js'></script>
@@ -20,8 +34,33 @@
 <script src='/debug/access_token_generated.js'></script>
 <script>
 
+const THREE = window.THREE;
+
+var width = 512;
+var height = 512;
+var viewAngle = 45;
+var nearClipping = 0.1;
+var farClipping = 9999;
+var scene = new THREE.Scene();
+var camera = new THREE.PerspectiveCamera(viewAngle, width / height, nearClipping, farClipping);
+var renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        alpha: true,
+        logarithmicDepthBuffer: true,
+    }
+);
+var viewerDiv = document.getElementById('three');
+viewerDiv.appendChild(renderer.domElement);
+// document.body.appendChild(renderer.domElement);
+renderer.setClearColor(new THREE.Color('#ff0000'))
+renderer.clearColor();
+renderer.setSize(512, 512);
+renderer.render(scene, camera);
+
+
 var mat4 = glMatrix.mat4;
 var map = window.map = new mapboxgl.Map({
+    context: renderer.context,
     container: 'map',
     antialias: true,
     zoom: 16.5,
@@ -57,7 +96,10 @@ const vec4 red = vec4(1.0, 0.0, 1.0, 1.0);
 uniform sampler2D u_texture;
 
 void main() {
-    gl_FragColor = texture2D(u_texture, v_texcoord);
+    // gl_FragColor = texture2D(u_texture, v_texcoord);
+    // gl_FragColor = texture2D(u_texture, v_texcoord);
+    gl_FragColor = texture2D(u_texture, vec2(v_texcoord.x, v_texcoord.y));
+
     // gl_FragColor = red;
     // gl_FragColor = vec4(v_texcoord.x, v_texcoord.y, 1.0, 1.0);
 }`;
@@ -98,6 +140,13 @@ function prepareProgram(painter) {
     // Compile the fragment shader
     gl.compileShader(fragShader);
 
+    const message = gl.getShaderInfoLog(fragShader);
+
+    if (message.length > 0) {
+        // message may be an error or a warning
+        throw message;
+    }
+
     // Create a shader program object to store combined shader program
     shaderProgram = gl.createProgram();
 
@@ -109,6 +158,11 @@ function prepareProgram(painter) {
 
     // Link both programs
     gl.linkProgram(shaderProgram);
+
+    if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+        const info = gl.getProgramInfoLog(shaderProgram);
+        throw new Error('Could not compile WebGL program. \n\n' + info);
+    }
 
     // Use the combined shader program object
     // gl.useProgram(shaderProgram);
